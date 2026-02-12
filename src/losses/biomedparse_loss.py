@@ -165,6 +165,7 @@ class BiomedParseLossCLS(nn.Module):
             existence_target,
         )
         
+        edge_loss = 0
         if self.edge_coeff > 0:
             edge_masks = predictions["edge_masks"]
             if edge_masks.shape[-2:] != (height, width):

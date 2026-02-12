@@ -54,11 +54,12 @@ class BiomedParseEvaluator(BaseOlympusEvaluator[SEEMPredictions]):
                 antialias=True,
             )
         
-        edge_masks = predictions["edge_masks"]
-        if edge_masks.shape[-2:] != (height, width):
-            edge_masks = F.interpolate(edge_masks, size=(height, width), mode="bicubic", align_corners=False, antialias=True)
-        predictions["edge_masks"] = self.postprocess(edge_masks) * (predictions["object_existence"]>0
-                                               ).int().unsqueeze(-1).unsqueeze(-1)
+        edge_masks = predictions.get("edge_masks")
+        if edge_masks is not None:
+            if edge_masks.shape[-2:] != (height, width):
+                edge_masks = F.interpolate(edge_masks, size=(height, width), mode="bicubic", align_corners=False, antialias=True)
+            predictions["edge_masks"] = self.postprocess(edge_masks) * (predictions["object_existence"]>0
+                                                   ).int().unsqueeze(-1).unsqueeze(-1)
 
         gold_labels = gold_labels.to(mask_preds.device)
         
@@ -108,12 +109,13 @@ class BiomedParseEvaluator(BaseOlympusEvaluator[SEEMPredictions]):
         # metrics.update(raw_metrics)
         
         # edge masks predictions
-        edge_masks = predictions.predictions["edge_masks"]
-        edge_labels = predictions.predictions["edge_label"]
-        edge_metrics = self._get_core_metrics(
-            edge_masks, edge_labels, metric_stage=f'{metric_stage}_edge'
-        )
-        metrics.update(edge_metrics)
+        edge_masks = predictions.predictions.get("edge_masks")
+        if edge_masks is not None:
+            edge_labels = predictions.predictions["edge_label"]
+            edge_metrics = self._get_core_metrics(
+                edge_masks, edge_labels, metric_stage=f'{metric_stage}_edge'
+            )
+            metrics.update(edge_metrics)
         
         # extract metrics
         existence_target = (predictions.gold_labels.flatten(1).sum(dim=1) > 0).float()  # [B*N]

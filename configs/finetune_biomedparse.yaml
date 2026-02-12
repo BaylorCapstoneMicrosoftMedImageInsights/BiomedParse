@@ -1,3 +1,4 @@
+# configs/finetune_biomedparse.yaml
 defaults:
   - model: biomedparse
   - datamodule: biomedparse_finetune_datamodule
@@ -8,36 +9,44 @@ defaults:
   - olympus_checkpoint: biomedparse_checkpoint_loader
   - _self_
 
+# Required Olympus root-level keys
+mode: "train" 
+external_mount: /home/medimage/medimage-inference-service/external_mount
+experiment_output_dir: /home/medimage/medimage-inference-service/external_mount/outputs
 
 mounts:
-  external: <YOUR MODEL AND DATA DIR>
-project_name: biomedparse
-experiment_output_dir: ${mounts.external}/outputs
+  external: ${external_mount}
 
+# Explicitly map your processed JSON files
 datamodule:
+  datasets:
+    _target_: azureml.acft.image.components.olympus.core.ModuleDatasets
+    train:
+      _target_: torch.utils.data.ConcatDataset
+      _partial_: True
+      datasets:
+        - _target_: src.datasets.biomedparse_dataset.BiomedParseDataset
+          root_dir: ${mounts.external}/data
+          split: train
+    validate:
+      _target_: torch.utils.data.ConcatDataset
+      _partial_: True
+      datasets:
+        - _target_: src.datasets.biomedparse_dataset.BiomedParseDataset
+          root_dir: ${mounts.external}/data
+          split: valid
   dataloaders:
     train:
       batch_size: 8
     validate:
       batch_size: 8
-    test:
-      batch_size: 8
-  validate_split_ratio: 0.1
 
+# 4090 Specific Optimizations
 trainer:
   max_epochs: 10
-
-loss:
-  cls_coeff: 1.0
-  pos_weight: 3.0
-  edge_coeff: 1.0
-
-model:
-  convolute_outputs: False
-  out_channels_1: 16
-  edge_queries: 4
+  precision: 16-mixed
+  devices: [0]
+  accumulate_grad_batches: 2
 
 optimizer:
-  lr: 0.00001
-
-mode: "train"
+  lr: 1e-5

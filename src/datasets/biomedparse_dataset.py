@@ -146,8 +146,12 @@ class BiomedParseDataset(Dataset):
 
         with open(self.json_file, "r") as file:
             data = json.load(file)
-            self.data_info = data.get("annotations", [])
-            self.class_prompts = data.get("class_prompts", None)
+            if isinstance(data, dict):
+                self.data_info = data.get("annotations", [])
+                self.class_prompts = data.get("class_prompts", None)
+            else:
+                self.data_info = data
+                self.class_prompts = None
 
         self.images_dir = os.path.join(root_dir, split)
         self.masks_dir = os.path.join(root_dir, f"{split}_mask")
@@ -159,8 +163,23 @@ class BiomedParseDataset(Dataset):
     def __getitem__(self, idx):
         ann_info = self.data_info[idx]
 
+        # Compatibility layer for user's JSON format
+        if "class_prompts" not in ann_info and "text" in ann_info:
+            ann_info["file_name"] = ann_info["image"].split("/")[-1]
+            if "label" in ann_info:
+                ann_info["mask_file"] = ann_info["label"].split("/")[-1]
+            
+            # Create a dummy class_prompts and instance_label
+            ann_info["class_prompts"] = {"1": [ann_info["text"]]}
+            ann_info["instance_label"] = False
+
+        file_name = ann_info.get("file_name") or ann_info.get("filename") or ann_info.get("image")
+        if not file_name:
+            keys = ann_info.keys() if isinstance(ann_info, dict) else "not a dict"
+            raise KeyError(f"Annotation at index {idx} is missing a file name key ('file_name', 'filename', or 'image'). Available keys: {keys}.")
+
         try:
-            img_path = os.path.join(self.images_dir, ann_info["file_name"])
+            img_path = os.path.join(self.images_dir, file_name)
             image = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
         except (IOError, FileNotFoundError):
             print(f"Image not found: {img_path}")
@@ -174,15 +193,16 @@ class BiomedParseDataset(Dataset):
             print(f"Mask not found: {mask_path}")
             mask_orig = np.zeros((*self.img_size, 1))
             image = np.zeros((*self.img_size, 3))
+
         if mask_orig is None:
             mask_orig = np.zeros((*self.img_size, 1))
             image = np.zeros((*self.img_size, 3))
             print(f"Mask is None: {mask_path}")
-        # check if mask is binary format with only 0 and 255
-        if mask_orig.max() == 255 and len(np.unique(mask_orig)) == 2:
-            mask_orig = 0.0 * mask_orig
-            image = 0.0 * image
-            print(f"Mask is binary format: {mask_path}")
+        # check if mask is binary format with only 0 and 255, and normalize it to 0 and 1
+        if mask_orig.max() == 255:
+            # print(f"Mask has max value 255, normalizing to 0/1: {mask_path}") # Commented out verbose logging
+            mask_orig[mask_orig == 255] = 1
+        
         if len(mask_orig.shape) == 3:
             mask_orig = mask_orig[:, :, 0]
 
@@ -194,12 +214,18 @@ class BiomedParseDataset(Dataset):
             image = image[:, :, [0, 2, 1]]
             
         
-        # # resize image to 1024x1024
-        # image = cv2.resize(
-        #     image,
-        #     (1024, 1024),
-        #     interpolation=cv2.INTER_LINEAR,
-        # ).astype(np.float32)
+        # resize image to self.img_size
+        image = cv2.resize(
+            image,
+            self.img_size,
+            interpolation=cv2.INTER_LINEAR,
+        ).astype(np.float32)
+
+        mask_orig = cv2.resize(
+            mask_orig,
+            self.interpolate_mask_size,
+            interpolation=cv2.INTER_NEAREST,
+        )
 
         image = np.transpose(image, (2, 0, 1))
         
