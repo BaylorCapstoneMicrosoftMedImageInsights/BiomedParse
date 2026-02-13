@@ -4,10 +4,10 @@ gradient_clip_val: 5.0
 devices: 1 # Update this based on your GPU availability
 num_nodes: 1
 precision: "bf16-mixed"
-# strategy:
-#   _target_: lightning.pytorch.strategies.DeepSpeedStrategy
-#   stage: 3
-#   offload_optimizer: True
-#   offload_parameters: True
 strategy: "ddp_find_unused_parameters_true"
-# strategy: "deepspeed"
+callbacks:
+  - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: /home/medimage/medimage-inference-service/external_mount/outputs/checkpoints/2_12
+    every_n_epochs: 1
+    save_top_k: -1 # Save a checkpoint for every epoch
+    filename: '{epoch}-{step}'

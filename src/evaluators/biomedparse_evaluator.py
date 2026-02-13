@@ -42,7 +42,6 @@ class BiomedParseEvaluator(BaseOlympusEvaluator[SEEMPredictions]):
         gold_labels = batch.get("labels", None)
 
         batch_size, num_masks, height, width = gold_labels.shape
-        gold_labels = gold_labels.view(batch_size * num_masks, 1, height, width)
         
         mask_preds = predictions["pred_gmasks"]
         if mask_preds.shape[-2:] != (height, width):

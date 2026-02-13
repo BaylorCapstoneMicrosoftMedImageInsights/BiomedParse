@@ -28,6 +28,9 @@ datamodule:
         - _target_: src.datasets.biomedparse_dataset.BiomedParseDataset
           root_dir: ${mounts.external}/data
           split: train
+          img_size: [1024, 1024]
+          interpolate_mask_size: [1024, 1024]
+          all_class_masks: True
     validate:
       _target_: torch.utils.data.ConcatDataset
       _partial_: True
@@ -35,11 +38,16 @@ datamodule:
         - _target_: src.datasets.biomedparse_dataset.BiomedParseDataset
           root_dir: ${mounts.external}/data
           split: valid
+          img_size: [1024, 1024]
+          interpolate_mask_size: [1024, 1024]
+          all_class_masks: True
   dataloaders:
     train:
       batch_size: 8
+      num_workers: 1
     validate:
       batch_size: 8
+      num_workers: 1
 
 # 4090 Specific Optimizations
 trainer:

@@ -215,10 +215,7 @@ class BiomedParseModel(nn.Module):
         self.backbone = backbone
         self.sem_seg_head = sem_seg_head
         self.sem_seg_head.override_input_shape(backbone.output_shape())
-        # self.pixel_mean = torch.tensor(pixel_mean).view(1, 3, 1, 1)
-        # self.pixel_std = torch.tensor(pixel_std).view(1, 3, 1, 1)
         if gray_scale:
-            # same value for all channels
             mean = float(np.mean(pixel_mean))
             std = float(np.mean(pixel_std))
             pixel_mean = [mean for _ in range(3)]
@@ -244,14 +241,16 @@ class BiomedParseModel(nn.Module):
             self.output_conv = nn.Conv2d(
                 in_channels=out_channels_1 + 3, out_channels=out_channels_1, kernel_size=1
             )
-            self.output_conv2 = nn.Conv2d(
-                in_channels=out_channels_1, out_channels=1, kernel_size=1
-            )
             self.activation = nn.GELU()
+        else:
+            self.output_conv_simple = nn.Conv2d(
+                self.sem_seg_head.predictor.num_queries, out_channels_1, kernel_size=1
+            )
 
     def convolution_procedure(self, image, pred_gmasks):
         """
         This function is for upscaling the output of the model to the original image size.
+        It now outputs a 10-channel tensor.
         """
         size = image.shape[-2:]  # bs, 3, h, w
         image_res2 = F.interpolate(
@@ -261,15 +260,6 @@ class BiomedParseModel(nn.Module):
             image, size=(size[0]//2, size[1]//2), mode="bilinear", align_corners=False
         )  # bs, 3, 256, 256 (stride=2)
 
-        mean_mask = pred_gmasks.mean(dim=1, keepdim=True)  # bs, 1, 256, 256 (stride=4)
-        # bs, num_queries, 128, 128
-        pred_gmasks_res1 = F.interpolate(
-            mean_mask,
-            size=(size[0]//2, size[1]//2),
-            mode="bilinear",
-            align_corners=False,
-        )  # bs, 1, 256, 256
-
         stack_res2 = torch.cat(
             (image_res2, pred_gmasks), dim=1
         )  # bs , num_queries+3, 128, 128
@@ -278,16 +268,12 @@ class BiomedParseModel(nn.Module):
         deconv_output = self.layer_norm(deconv_output)  # bs, 10, 256, 256
         deconv_output = self.activation(deconv_output)  # bs, 10, 256, 256
 
-        # concatenation with image_res2
+        # concatenation with image_res1
         stack_res1 = torch.cat((image_res1, deconv_output), dim=1)  # bs, 13, 256, 256
-        outputs_1_channel = self.output_conv(stack_res1)  # bs, 1, 256, 256
-        outputs_1_channel = self.activation(outputs_1_channel)  # bs, 1, 256, 256
-        outputs_1_channel = self.output_conv2(outputs_1_channel)  # bs, 1, 256, 256
+        outputs_10_channels = self.output_conv(stack_res1)  # bs, 10, 256, 256
+        outputs_10_channels = self.activation(outputs_10_channels)  # bs, 10, 256, 256
 
-        stacked_tensor = torch.cat((outputs_1_channel, pred_gmasks_res1), dim=1)
-        averaged_results = stacked_tensor.mean(dim=1, keepdim=True)  # Take mean
-
-        return averaged_results
+        return outputs_10_channels
 
     def forward_train(self, inputs):
         image = inputs["image"] if "image" in inputs else None
@@ -325,7 +311,7 @@ class BiomedParseModel(nn.Module):
             image = image.repeat_interleave(num_prompts, dim=0)
             outputs["pred_gmasks"] = self.convolution_procedure(image, outputs["pred_gmasks"])
         else:
-            outputs["pred_gmasks"] = outputs["pred_gmasks"].mean(dim=1, keepdim=True)
+            outputs["pred_gmasks"] = self.output_conv_simple(outputs["pred_gmasks"])
 
         results = {"predictions": outputs}
         # print("total time: ", time.time() - t0)
@@ -362,7 +348,7 @@ class BiomedParseModel(nn.Module):
             image = image.repeat_interleave(num_prompts, dim=0)
             outputs["pred_gmasks"] = self.convolution_procedure(image, outputs["pred_gmasks"])
         else:
-            outputs["pred_gmasks"] = outputs["pred_gmasks"].mean(dim=1, keepdim=True)
+            outputs["pred_gmasks"] = self.output_conv_simple(outputs["pred_gmasks"])
 
         results = {"predictions": outputs}
 

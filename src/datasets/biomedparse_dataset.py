@@ -9,15 +9,11 @@ import torch.nn.functional as F
 from PIL import Image
 from torch.utils.data import Dataset
 
-# Determine the data directory dynamically
-# amlt_data_dir = os.getenv("AMLT_DATA_DIR", "/mnt/default/data")
-# path_to_check = "/mnt/external/data"
-# DATA_DIR = path_to_check if os.path.exists(path_to_check) else amlt_data_dir
-
 def add_gaussian_noise(image, mean=0, std=25):
     noise = np.random.normal(mean, std, image.shape).astype(np.uint8)
     noisy_image = image + noise
     return noisy_image
+
 def add_salt_and_pepper_noise(image, noise_ratio=0.02):
     noisy_image = image.copy()
     h, w, c = noisy_image.shape
@@ -29,6 +25,7 @@ def add_salt_and_pepper_noise(image, noise_ratio=0.02):
         else:
             noisy_image[row, col] = [255, 255, 255]
     return noisy_image
+
 class DataAugmentation:
     def __init__(
         self,
@@ -58,7 +55,7 @@ class DataAugmentation:
             if self.rotate:
                 rotate_times = random.randint(0, 3)
                 img = np.rot90(img, rotate_times, (0, 1))
-                mask = np.rot90(mask, rotate_times)
+                mask = np.rot90(mask, rotate_times, (0, 1))
             # Flip the image
             if self.flip:
                 flip = random.choice([0, 1, -1])
@@ -72,7 +69,12 @@ class DataAugmentation:
                 # pad the image with zeros
                 pad = int(2 * h * self.crop_ratio + 1)
                 img = np.pad(img, ((pad, pad), (pad, pad), (0, 0)), mode="constant")
-                mask = np.pad(mask, ((pad, pad), (pad, pad)), mode="constant")
+                mask_pad_val = 0
+                if len(mask.shape) == 3:
+                    mask = np.pad(mask, ((pad, pad), (pad, pad), (0,0)), mode="constant", constant_values=mask_pad_val)
+                else:
+                    mask = np.pad(mask, ((pad, pad), (pad, pad)), mode="constant", constant_values=mask_pad_val)
+
 
                 # crop the image
                 scale = 1 + np.random.uniform(-self.crop_ratio, self.crop_ratio)
@@ -95,9 +97,7 @@ class DataAugmentation:
 
             # Shift pixel values
             if self.pixel_shift:
-                # pixel_max = np.max(img)
-                # pixel_min = np.min(img)
-                scale = 255.0 #pixel_max - pixel_min
+                scale = 255.0
                 shift = np.random.uniform(-scale, scale) * self.pixel_shift_ratio
                 img = img + shift
                 
@@ -129,155 +129,99 @@ class BiomedParseDataset(Dataset):
         num_prompts=4,
         all_class_masks=False,
         transforms=DataAugmentation(),
-        img_size=(512, 512),
-        interpolate_mask_size=(512, 512),
+        img_size=(1024, 1024),
+        interpolate_mask_size=(1024, 1024),
         name=None,
         negative=False,
     ):
         self.root_dir = root_dir
         self.split = split
         self.num_prompts = num_prompts
-        self.all_class_masks = all_class_masks    # output multiclass mask with all prompts
+        self.all_class_masks = all_class_masks
         self.transforms = transforms
         self.img_size = img_size
         self.interpolate_mask_size = interpolate_mask_size
         self.json_file = os.path.join(root_dir, f"{split}.json")
         self.name = name if name else os.path.basename(os.path.normpath(root_dir))
+        
+        # This should be fetched from data.yaml, but hardcoding for now to match preprocess script
+        self.CLASS_NAMES = [
+            'Comminuted', 'Greenstick', 'Healthy', 'Linear', 'Oblique Displaced', 
+            'Oblique', 'Segmental', 'Spiral', 'Transverse Displaced', 'Transverse'
+        ]
 
         with open(self.json_file, "r") as file:
-            data = json.load(file)
-            if isinstance(data, dict):
-                self.data_info = data.get("annotations", [])
-                self.class_prompts = data.get("class_prompts", None)
-            else:
-                self.data_info = data
-                self.class_prompts = None
-
-        self.images_dir = os.path.join(root_dir, split)
-        self.masks_dir = os.path.join(root_dir, f"{split}_mask")
-        self.negative = negative
+            self.data_info = json.load(file)
 
     def __len__(self):
         return len(self.data_info)
 
     def __getitem__(self, idx):
         ann_info = self.data_info[idx]
-
-        # Compatibility layer for user's JSON format
-        if "class_prompts" not in ann_info and "text" in ann_info:
-            ann_info["file_name"] = ann_info["image"].split("/")[-1]
-            if "label" in ann_info:
-                ann_info["mask_file"] = ann_info["label"].split("/")[-1]
-            
-            # Create a dummy class_prompts and instance_label
-            ann_info["class_prompts"] = {"1": [ann_info["text"]]}
-            ann_info["instance_label"] = False
-
-        file_name = ann_info.get("file_name") or ann_info.get("filename") or ann_info.get("image")
-        if not file_name:
-            keys = ann_info.keys() if isinstance(ann_info, dict) else "not a dict"
-            raise KeyError(f"Annotation at index {idx} is missing a file name key ('file_name', 'filename', or 'image'). Available keys: {keys}.")
-
-        try:
-            img_path = os.path.join(self.images_dir, file_name)
-            image = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-        except (IOError, FileNotFoundError):
-            print(f"Image not found: {img_path}")
-            image = np.zeros((*self.img_size, 3))
-            mask_orig = np.zeros((*self.img_size, 1))
-
-        mask_path = os.path.join(self.masks_dir, ann_info.get("mask_file", ""))
-        try:
-            mask_orig = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
-        except (IOError, FileNotFoundError):
-            print(f"Mask not found: {mask_path}")
-            mask_orig = np.zeros((*self.img_size, 1))
-            image = np.zeros((*self.img_size, 3))
-
-        if mask_orig is None:
-            mask_orig = np.zeros((*self.img_size, 1))
-            image = np.zeros((*self.img_size, 3))
-            print(f"Mask is None: {mask_path}")
-        # check if mask is binary format with only 0 and 255, and normalize it to 0 and 1
-        if mask_orig.max() == 255:
-            # print(f"Mask has max value 255, normalizing to 0/1: {mask_path}") # Commented out verbose logging
-            mask_orig[mask_orig == 255] = 1
         
-        if len(mask_orig.shape) == 3:
-            mask_orig = mask_orig[:, :, 0]
+        img_path = ann_info.get("image")
+        mask_dir = ann_info.get("mask")
+
+        try:
+            image = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+            if image is None: raise IOError
+        except (IOError, FileNotFoundError):
+            print(f"Image not found, creating empty image: {img_path}")
+            image = np.zeros((*self.img_size, 3), dtype=np.uint8)
+
+        masks = []
+        if mask_dir and os.path.isdir(mask_dir):
+            for class_name in self.CLASS_NAMES:
+                mask_path = os.path.join(mask_dir, f"{class_name}.png")
+                try:
+                    m = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
+                    if m is None:
+                        m = np.zeros(self.img_size, dtype=np.uint8)
+                    if m.max() > 1:
+                        m[m > 0] = 1 # Normalize
+                    masks.append(m)
+                except (IOError, FileNotFoundError):
+                    print(f"Mask file not found, creating empty mask: {mask_path}")
+                    masks.append(np.zeros(self.img_size, dtype=np.uint8))
+        else:
+            print(f"Mask directory not found or invalid, creating empty masks: {mask_dir}")
+            masks = [np.zeros(self.img_size, dtype=np.uint8) for _ in range(len(self.CLASS_NAMES))]
+
+        mask_stack = np.stack(masks, axis=-1).astype(np.uint8)
 
         if self.transforms:
-            image, mask_orig = self.transforms(image, mask_orig)
+            image, mask_stack = self.transforms(image, mask_stack)
             
-        # randomly swap channels 1 and 2
         if random.random() < 0.5:
             image = image[:, :, [0, 2, 1]]
             
-        
-        # resize image to self.img_size
         image = cv2.resize(
             image,
             self.img_size,
             interpolation=cv2.INTER_LINEAR,
         ).astype(np.float32)
 
-        mask_orig = cv2.resize(
-            mask_orig,
-            self.interpolate_mask_size,
-            interpolation=cv2.INTER_NEAREST,
-        )
+        # Ensure mask is resized correctly
+        if mask_stack.shape[:2] != self.interpolate_mask_size:
+             mask_stack = cv2.resize(
+                mask_stack,
+                self.interpolate_mask_size,
+                interpolation=cv2.INTER_NEAREST,
+            )
 
         image = np.transpose(image, (2, 0, 1))
-        
-        # prepare prompts and corresponding masks
-        if self.class_prompts:
-            class_prompts = self.class_prompts
-        else:
-            class_prompts = ann_info["class_prompts"]
-            
-        is_instance = ann_info["instance_label"]
-            
-        if not self.all_class_masks:
-            # sample class id
-            if is_instance:
-                all_classes = [int(_) for _ in class_prompts if _ != 'instance_label']
-                class_ids = [all_classes[0] for _ in range(self.num_prompts)]
-                mask = mask_orig.astype(np.uint8)
-                mask = np.repeat(mask[None, :, :], self.num_prompts, axis=0)
-            else:
-                all_classes = [int(_) for _ in class_prompts if _ != 'instance_label']
-                replace = False if len(all_classes) >= self.num_prompts else True
-                class_ids = np.random.choice(all_classes, size=self.num_prompts, replace=replace)
-                mask = np.stack(
-                    [(1 * (mask_orig == class_id)).astype(np.uint8) for class_id in class_ids]
-                )
-        else:
-            # get one multi class mask with all class ids
-            class_ids = [int(_) for _ in class_prompts if _ != 'instance_label']
-            class_ids.sort()    # sort class ids
-            if is_instance:
-                # binary mask for only one class
-                mask = (class_ids[0] * (mask_orig > 0)).astype(np.uint8)
-            else:
-                # multi class mask
-                mask = mask_orig.astype(np.uint8)
-                               
-        # sample prompt
-        selected_sentence = [
-            choose_prompt(class_prompts[str(class_id)]) for class_id in class_ids
-        ]
-        selected_sentence = "[SEP]".join(selected_sentence)
-        
-        class_ids_str = "&".join([str(class_id) for class_id in class_ids])
+        # Ensure mask is (C, H, W) if it's not already
+        if len(mask_stack.shape) == 3 and mask_stack.shape[-1] == len(self.CLASS_NAMES):
+            mask_stack = np.transpose(mask_stack, (2, 0, 1))
 
         return {
             "image": torch.tensor(image.copy(), dtype=torch.float32),
-            "labels": torch.tensor(mask.copy(), dtype=torch.long),
-            "text": selected_sentence,
-            "class_ids": class_ids_str,
-            "mask_file": mask_path,
-            "instance_label": is_instance,
-            "multiclass_label": self.all_class_masks,
+            "labels": torch.tensor(mask_stack.copy(), dtype=torch.long),
+            "text": "multi-channel-mask",
+            "class_ids": "&".join([str(i) for i in range(len(self.CLASS_NAMES))]),
+            "mask_file": mask_dir,
+            "instance_label": False,
+            "multiclass_label": True,
         }
 
 

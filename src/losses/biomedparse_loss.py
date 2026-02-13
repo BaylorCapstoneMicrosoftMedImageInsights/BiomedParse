@@ -190,3 +190,46 @@ class BiomedParseLossCLS(nn.Module):
         #             torch.tensor([1.0], device=predictions["object_existence"].device))
         # print("SEEMLossCLS time: ", time.time()-t0)
         # return total_loss / num_masks / batch_size
+
+class DiceLoss(nn.Module):
+    def __init__(self, smooth=1e-6):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+
+    def forward(self, pred, target):
+        pred = torch.sigmoid(pred)
+        
+        # flatten label and prediction tensors
+        pred = pred.view(-1)
+        target = target.view(-1)
+        
+        intersection = (pred * target).sum()
+        dice = (2. * intersection + self.smooth) / (pred.sum() + target.sum() + self.smooth)
+        
+        return 1 - dice
+
+class BiomedParseMultiChannelLoss(nn.Module):
+    def __init__(self, dice_coeff=0.5, bce_coeff=0.5, pos_weight=3.0):
+        super().__init__()
+        self.dice_coeff = dice_coeff
+        self.bce_coeff = bce_coeff
+        self.dice_loss = DiceLoss()
+        self.bce_loss = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight))
+
+    def forward(self, predictions, labels):
+        pred_gmasks = predictions["pred_gmasks"]
+        target_masks = labels.float()
+
+        if pred_gmasks.shape[-2:] != target_masks.shape[-2:]:
+            pred_gmasks = F.interpolate(
+                pred_gmasks,
+                size=target_masks.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        dice = self.dice_loss(pred_gmasks, target_masks)
+        bce = self.bce_loss(pred_gmasks, target_masks)
+
+        total_loss = self.dice_coeff * dice + self.bce_coeff * bce
+        return total_loss

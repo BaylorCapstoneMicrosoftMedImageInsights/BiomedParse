@@ -1,4 +1,4 @@
-_target_: src.losses.biomedparse_loss.BiomedParseLossCLS
-loss: 
-  _target_: src.losses.medsam_loss.MedSamLoss
-  reduction: "none"
+_target_: src.losses.biomedparse_loss.BiomedParseMultiChannelLoss
+pos_weight: 3.0
+dice_coeff: 0.5
+bce_coeff: 0.5
